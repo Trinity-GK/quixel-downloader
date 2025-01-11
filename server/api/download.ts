@@ -6,6 +6,7 @@ import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import axios from 'axios'
 import * as fs from "node:fs";
+import {integer} from "vscode-languageserver-types";
 
 interface TextureSettings {
     [key: string]: {
@@ -241,6 +242,10 @@ function sanitizeComponents(input: any, extendedData: any) {
 
 // Previous interfaces remain the same...
 
+const sleep = async (time: integer) => {
+    return new Promise( resolve => setTimeout(resolve, time) );
+}
+
 function sendProgressUpdate(event: any, data: any) {
     event.node.res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
@@ -421,6 +426,7 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                 status: 'Download complete'
             });
 
+            await sleep(1000)
         } catch (error: any) {
             console.error(`Error downloading asset ${asset.id}:`, error);
             sendProgressUpdate(event, {
