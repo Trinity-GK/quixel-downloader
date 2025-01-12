@@ -86,6 +86,7 @@ const startDownloads = () => {
 
     isProcessing.value = true;
     downloadStarted.value = true;
+    let lastPercent = 0;  // Track last percentage
 
     fetch('/api/download', {
       method: 'POST',
@@ -113,7 +114,14 @@ const startDownloads = () => {
             try {
               const data = JSON.parse(message.slice(5));
 
-              eventData.value = data;
+              // Only update if percent change is > 3% or it's a non-progress event
+              if (data.type !== 'download_progress' ||
+                  Math.abs(data.progress?.percent - lastPercent) > 3) {
+                eventData.value = data;
+                if (data.progress?.percent !== undefined) {
+                  lastPercent = data.progress.percent;
+                }
+              }
 
               if (data.type === 'all_complete' || data.type === 'error') {
                 isProcessing.value = false;

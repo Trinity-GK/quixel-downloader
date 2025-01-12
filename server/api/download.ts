@@ -1,6 +1,6 @@
 import { defineEventHandler, getCookie, readBody } from 'h3'
 import { createWriteStream } from 'fs'
-import { mkdir } from 'fs/promises'
+import { mkdir, access, constants, stat } from 'fs/promises'
 import { join } from 'path'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
@@ -347,14 +347,11 @@ export default defineEventHandler(async (event) => {
 async function processDownloads(event: any, assets: any, api: any, settings: any) {
     for (let i = 0; i < assets.length; i++) {
         console.log('ASSET', assets[i].id);
-
-
         const asset = assets[i];
         createLog(asset.id, '0-settings', settings);
-
         createLog(asset.id, '1-asset', asset);
+
         try {
-            // Send asset start progress
             sendProgressUpdate(event, {
                 type: 'asset_start',
                 asset: asset.id,
@@ -365,70 +362,46 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                 status: 'Fetching asset metadata'
             });
 
-            // Get the extended asset data
             const { data: extendedData } = await api.get(
                 `https://quixel.com/v1/assets/${asset.id}/extended`
             );
-
             createLog(asset.id, '2-extendedData', asset);
 
-
-            // Send metadata progress
             sendProgressUpdate(event, {
                 type: 'metadata_complete',
                 asset: asset.id,
                 status: 'Preparing download request'
             });
 
-            // Create and sanitize the download payload
             const downloadPayload = {
                 asset: asset.id,
                 components: prepareComponents(settings),
                 config: prepareConfig(settings, extendedData)
             };
-
             createLog(asset.id, '3-downloadPayload', downloadPayload);
 
-
             const sanitizedPayload = sanitizeComponents(downloadPayload, extendedData);
-
             createLog(asset.id, '4-sanitizedPayload', sanitizedPayload);
 
-            // Request the download
             const { data: downloadInfo } = await api.post(
                 "https://quixel.com/v1/downloads",
                 sanitizedPayload
             );
-
             createLog(asset.id, '5-downloadInfo', downloadInfo);
 
             const downloadId = downloadInfo.id;
             const finalDownloadUrl = `https://assetdownloads.quixel.com/download/${downloadId}?preserveStructure=true&url=https%3A%2F%2Fquixel.com%2Fv1%2Fdownloads`;
 
-            // Create download directory
             const downloadDir = buildDownloadPath(
                 settings.modelSettings.downloadPath,
                 asset.path || []
             );
-
             await mkdir(downloadDir, { recursive: true });
 
             createLog(asset.id, '6-finalDownloadInfo', {
                 finalDownloadUrl,
                 responseType: 'stream',
-                    maxRedirects: 5,
-                    timeout: 30000,
-                    headers: {
-                ...api.defaults.headers,
-                        'Accept': '*/*'
-                }
-            });
-
-            // Download with progress tracking
-            const { data: fileStream, headers } = await api.get(finalDownloadUrl, {
-                responseType: 'stream',
                 maxRedirects: 5,
-                validateStatus: (status: any) => status < 400,
                 timeout: 30000,
                 headers: {
                     ...api.defaults.headers,
@@ -436,35 +409,75 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                 }
             });
 
-            const totalSize = parseInt(headers['content-length'] || '0');
-            let downloadedBytes = 0;
-
-            fileStream.on('data', (chunk: any) => {
-                downloadedBytes += chunk.length;
-                const progress = (downloadedBytes / totalSize) * 100;
-
-                sendProgressUpdate(event, {
-                    type: 'download_progress',
-                    asset: asset.id,
-                    progress: {
-                        percent: Math.round(progress),
-                        bytes: downloadedBytes,
-                        total: totalSize
-                    },
-                    status: 'Downloading'
-                });
-            });
-
-            const filename = headers['content-disposition']
-                ? headers['content-disposition'].split('filename=')[1].replace(/"/g, '')
-                : `${asset.id}.zip`;
-
+            const filename = `${asset.id}.zip`;
             const filePath = join(downloadDir, filename);
 
-            // Stream to disk
-            await pipeline(fileStream, createWriteStream(filePath));
+            let downloadedBytes = 0;
+            try {
+                const stats = await stat(filePath);
+                downloadedBytes = stats.size;
+            } catch {
+                downloadedBytes = 0;
+            }
 
-            // Send completion for this asset
+            let retryCount = 0;
+            while (retryCount < 5) {
+                try {
+                    const { data: fileStream, headers } = await api.get(finalDownloadUrl, {
+                        responseType: 'stream',
+                        maxRedirects: 5,
+                        validateStatus: (status: any) => status < 400,
+                        timeout: 30000,
+                        headers: {
+                            ...api.defaults.headers,
+                            'Accept': '*/*',
+                            ...(downloadedBytes > 0 ? { 'Range': `bytes=${downloadedBytes}-` } : {})
+                        }
+                    });
+
+                    const totalSize = parseInt(
+                        headers['content-range']
+                            ? headers['content-range'].split('/')[1]
+                            : headers['content-length'] || '0'
+                    );
+
+                    if (downloadedBytes === totalSize) {
+                        console.log(`${filePath} already downloaded`);
+                        break;
+                    }
+
+                    fileStream.on('data', (chunk: any) => {
+                        downloadedBytes += chunk.length;
+                        const progress = (downloadedBytes / totalSize) * 100;
+
+                        sendProgressUpdate(event, {
+                            type: 'download_progress',
+                            asset: asset.id,
+                            progress: {
+                                percent: Math.round(progress),
+                                bytes: downloadedBytes,
+                                total: totalSize
+                            },
+                            status: `${downloadedBytes > 0 ? 'Resuming download' : 'Downloading'} (Attempt ${retryCount + 1}/5)`
+                        });
+                    });
+
+                    await pipeline(
+                        fileStream,
+                        createWriteStream(filePath, { flags: downloadedBytes > 0 ? 'a' : 'w' })
+                    );
+                    break;
+
+                } catch (error) {
+                    retryCount++;
+                    if (retryCount >= 5) {
+                        throw new Error(`Failed to download after 5 attempts: ${error.message}`);
+                    }
+                    console.log(`Download interrupted (attempt ${retryCount}/5), will try to resume in 5 seconds...`);
+                    await sleep(5000);
+                }
+            }
+
             sendProgressUpdate(event, {
                 type: 'asset_complete',
                 asset: asset.id,
@@ -472,10 +485,10 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                 status: 'Download complete'
             });
 
-            await sleep(1000)
+            await sleep(1000);
+
         } catch (error: any) {
             createLog(asset.id, '00-error', error);
-
             console.error(`Error downloading asset ${asset.id}:`, error);
             sendProgressUpdate(event, {
                 type: 'error',
@@ -485,7 +498,6 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
         }
     }
 
-    // Send final completion
     sendProgressUpdate(event, {
         type: 'all_complete',
         status: 'All downloads completed'
