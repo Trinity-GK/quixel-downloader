@@ -28,35 +28,22 @@ interface ProcessedAsset extends Asset {
 }
 
 function validateSelectedPaths(treeData: any, selectedPaths: any) {
-    // Helper function to get object at path
-    function getObjectAtPath(obj: any, path: any) {
-        return path.reduce((current: any, key: string) => current && current[key], obj);
+    // Helper function to check if a path is a parent of another path
+    function isParentPath(parentPath: string[], childPath: string[]) {
+        if (parentPath.length >= childPath.length) return false;
+        return parentPath.every((segment, index) => segment === childPath[index]);
     }
 
-    // Helper function to check if all children of a path are selected
-    function hasAllChildrenSelected(path: any) {
-        const nodeAtPath = getObjectAtPath(treeData, path);
-        if (!nodeAtPath) return true;
-
-        const childKeys = Object.keys(nodeAtPath);
-        if (childKeys.length === 0) return true;
-
-        return childKeys.every(key => {
-            const childPath = [...path, key];
-            return selectedPaths.some((selectedPath: any) =>
-                JSON.stringify(selectedPath) === JSON.stringify(childPath)
-            );
-        });
+    // Helper function to check if a path has any children in the selected paths
+    function hasSelectedChildren(path: any, allPaths: any) {
+        return allPaths.some((otherPath: any) =>
+            path !== otherPath && // not the same path
+            isParentPath(path, otherPath) // is a parent of another path
+        );
     }
 
-    // Return paths that either have all children selected or are leaf nodes
-    return selectedPaths.filter((currentPath: any) => {
-        const nodeAtPath = getObjectAtPath(treeData, currentPath);
-        if (!nodeAtPath) return false;  // Path doesn't exist in tree
-
-        // If it's a leaf node (no children) or all children are selected, keep it
-        return Object.keys(nodeAtPath).length === 0 || hasAllChildrenSelected(currentPath);
-    });
+    // Keep only paths that don't have any selected children
+    return selectedPaths.filter((path: any) => !hasSelectedChildren(path, selectedPaths));
 }
 
 // Create Algolia query for a category path
@@ -97,17 +84,18 @@ export default defineEventHandler(async (event) => {
     try {
         // Get data from request body
         const body = await readBody(event);
-        const selectedPathsStr = getCookie(event, 'selectedPaths') || '[]';
-        const treeDataStr = getCookie(event, 'treeData') || '[]';
-        const treeData = JSON.parse(treeDataStr);
+        const selectedPathsRaw = body.selectedPaths || [];
+        const treeData = body.treeData || [];
 
         // sort from the biggest array to smallest
-        const selectedPaths = JSON.parse(selectedPathsStr)
+        const selectedPaths = selectedPathsRaw
             .map((top: any) => top
                 .filter((sub: any) => sub !== 'Root')
             ).sort((a: any, b: any) => b.length - a.length);
 
-        console.log(selectedPaths)
+        const validatedPaths = validateSelectedPaths(treeData, selectedPaths);
+
+        console.log(validatedPaths);
 
 
         const acquiredData = body.acquiredData || [];

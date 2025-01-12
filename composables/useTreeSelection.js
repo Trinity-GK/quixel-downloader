@@ -39,40 +39,56 @@ function validateSelectedPaths(treeData, selectedPaths) {
 
 
 export function createTreeSelection() {
-    const treeDataCookie = useCookie('treeData');
-    const selectedPathsCookie = useCookie('selectedPaths');
+    // Helper functions for localStorage
+    const getLocalStorage = (key, defaultValue) => {
+        if (import.meta.client) {
+            const stored = localStorage.getItem(key);
+            return stored ? JSON.parse(stored) : defaultValue;
+        }
+        return defaultValue;
+    };
+
+    const setLocalStorage = (key, value) => {
+        if (import.meta.client) {
+            localStorage.setItem(key, JSON.stringify(value));
+        }
+    };
+
     const { bearerToken } = useBearerToken();
 
-    // Safely parse cookies, fallback to default values
+    // Initialize refs with localStorage values
     const treeData = ref(
-        safeParseCookie(treeDataCookie.value, [])
+        getLocalStorage('treeData', [])
     );
     const selectedPaths = ref(
-        safeParseCookie(selectedPathsCookie.value, [])
+        getLocalStorage('selectedPaths', [])
     );
 
-    console.log('selectedPaths', selectedPaths)
+    console.log('selectedPaths', selectedPaths);
 
     const fetchTreeData = async () => {
-        if (!treeData.value.length) {
-            try {
-                const response = await $fetch('/api/tree', {
-                    method: 'POST',
-                    body: { bearerToken: bearerToken.value },
-                });
+        try {
+            const response = await $fetch('/api/tree', {
+                method: 'POST',
+                body: { bearerToken: bearerToken.value },
+            });
 
-                if (response.success) {
-                    treeData.value = Array.isArray(response.data.acquiredTree)
-                        ? transformArrayToTree(response.data.acquiredTree)
-                        : transformToTreeFormat(response.data.acquiredTree);
+            console.log('response', response);
 
-                    treeDataCookie.value = JSON.stringify(treeData.value);
-                } else {
-                    throw new Error(response.error);
-                }
-            } catch (error) {
-                console.error('Failed to fetch tree data:', error.message);
+            if (response.success) {
+                treeData.value = Array.isArray(response.data.acquiredTree)
+                    ? transformArrayToTree(response.data.acquiredTree)
+                    : transformToTreeFormat(response.data.acquiredTree);
+
+
+                console.log('treeData', treeData.value)
+
+                setLocalStorage('treeData', treeData.value);
+            } else {
+                throw new Error(response.error);
             }
+        } catch (error) {
+            console.error('Failed to fetch tree data:', error.message);
         }
     };
 
@@ -94,21 +110,19 @@ export function createTreeSelection() {
             item.every((p, i) => p === path[i])
         )) {
             selectedPaths.value = [...selectedPaths.value, path];
-            selectedPathsCookie.value = JSON.stringify(selectedPaths.value);
+            setLocalStorage('selectedPaths', selectedPaths.value);
         }
     };
 
     const savePath = (path) => {
-
-        const filteredPath = validateSelectedPaths(treeDataCookie.value, path.value)
-        selectedPathsCookie.value = JSON.stringify(path.value);
-    }
+        setLocalStorage('selectedPaths', path.value);
+    };
 
     const deselectPath = (path) => {
         selectedPaths.value = selectedPaths.value.filter((item) =>
             !(item.length === path.length && item.every((p, i) => p === path[i]))
         );
-        selectedPathsCookie.value = JSON.stringify(selectedPaths.value);
+        setLocalStorage('selectedPaths', selectedPaths.value);
     };
 
     const state = {

@@ -94,6 +94,12 @@ const TEXTURE_TYPE_MAP = {
 
 const LOD_SIZES = [9788, 4894, 2446, 1224, 612, 306];
 
+function createLog(assetId: string, type: string, log: any) {
+    const directory = `./logs/${assetId}/`
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(`${directory}${type}.json`, JSON.stringify(log, null, 2));
+}
+
 function prepareComponents(settings: DownloadSettings): RequestComponent[] {
     const components: RequestComponent[] = [];
 
@@ -123,7 +129,7 @@ function prepareComponents(settings: DownloadSettings): RequestComponent[] {
     return components;
 }
 
-function prepareConfig(settings: DownloadSettings) {
+function prepareConfig(settings: DownloadSettings, extendedData: any) {
     const config = {
         highpoly: settings?.modelSettings?.extraSettings?.highpolySource,
         ztool: settings?.modelSettings?.extraSettings?.sourceZTool,
@@ -136,9 +142,22 @@ function prepareConfig(settings: DownloadSettings) {
         lods: [] as number[]
     };
 
+    // Get LOD meshes from extended data if available
+    const lodMeshes = extendedData?.meshes?.filter((mesh: any ) =>
+        mesh.type === 'lod' && typeof mesh.tris === 'number'
+    ) ?? [];
+
     config.lods = Object.entries(settings?.modelSettings?.lodSettings)
         .filter(([_, enabled]) => enabled)
-        .map((_, index) => LOD_SIZES[index])
+        .map((_, index) => {
+            // Try to get tris from extended data first
+            const lodMesh = lodMeshes[index];
+            if (lodMesh?.tris !== undefined) {
+                return lodMesh.tris;
+            }
+            // Fall back to default LOD sizes if no extended data available
+            return LOD_SIZES[index];
+        })
         .filter(size => size !== undefined);
 
     return config;
@@ -216,11 +235,11 @@ function sanitizeComponents(input: any, extendedData: any) {
         .filter(comp => {
             const available = availableComponents.get(comp.type);
             if (!available) {
-                console.log(`Skipping ${comp.type} - not available in asset`);
+                // console.log(`Skipping ${comp.type} - not available in asset`);
                 return false;
             }
             if (!available.mimeTypes.has(comp.mimeType)) {
-                console.log(`Skipping ${comp.type} - mime type ${comp.mimeType} not supported`);
+                // console.log(`Skipping ${comp.type} - mime type ${comp.mimeType} not supported`);
                 return false;
             }
             return true;
@@ -327,8 +346,13 @@ export default defineEventHandler(async (event) => {
 // Separate function to handle downloads
 async function processDownloads(event: any, assets: any, api: any, settings: any) {
     for (let i = 0; i < assets.length; i++) {
-        const asset = assets[i];
+        console.log('ASSET', assets[i].id);
 
+
+        const asset = assets[i];
+        createLog(asset.id, '0-settings', settings);
+
+        createLog(asset.id, '1-asset', asset);
         try {
             // Send asset start progress
             sendProgressUpdate(event, {
@@ -346,6 +370,9 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                 `https://quixel.com/v1/assets/${asset.id}/extended`
             );
 
+            createLog(asset.id, '2-extendedData', asset);
+
+
             // Send metadata progress
             sendProgressUpdate(event, {
                 type: 'metadata_complete',
@@ -357,16 +384,23 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
             const downloadPayload = {
                 asset: asset.id,
                 components: prepareComponents(settings),
-                config: prepareConfig(settings)
+                config: prepareConfig(settings, extendedData)
             };
 
+            createLog(asset.id, '3-downloadPayload', downloadPayload);
+
+
             const sanitizedPayload = sanitizeComponents(downloadPayload, extendedData);
+
+            createLog(asset.id, '4-sanitizedPayload', sanitizedPayload);
 
             // Request the download
             const { data: downloadInfo } = await api.post(
                 "https://quixel.com/v1/downloads",
                 sanitizedPayload
             );
+
+            createLog(asset.id, '5-downloadInfo', downloadInfo);
 
             const downloadId = downloadInfo.id;
             const finalDownloadUrl = `https://assetdownloads.quixel.com/download/${downloadId}?preserveStructure=true&url=https%3A%2F%2Fquixel.com%2Fv1%2Fdownloads`;
@@ -376,7 +410,19 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                 settings.modelSettings.downloadPath,
                 asset.path || []
             );
+
             await mkdir(downloadDir, { recursive: true });
+
+            createLog(asset.id, '6-finalDownloadInfo', {
+                finalDownloadUrl,
+                responseType: 'stream',
+                    maxRedirects: 5,
+                    timeout: 30000,
+                    headers: {
+                ...api.defaults.headers,
+                        'Accept': '*/*'
+                }
+            });
 
             // Download with progress tracking
             const { data: fileStream, headers } = await api.get(finalDownloadUrl, {
@@ -428,6 +474,8 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
 
             await sleep(1000)
         } catch (error: any) {
+            createLog(asset.id, '00-error', error);
+
             console.error(`Error downloading asset ${asset.id}:`, error);
             sendProgressUpdate(event, {
                 type: 'error',

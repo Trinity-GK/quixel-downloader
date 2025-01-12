@@ -13,7 +13,7 @@ onMounted(async () => {
 });
 
 const saveTreeData = async () => {
-  console.log(selectedPaths.value)
+  console.log('saveTreeData', selectedPaths.value)
   if (selectedPaths.value.length) {
     savePath(selectedPaths);
     router.push('/download')

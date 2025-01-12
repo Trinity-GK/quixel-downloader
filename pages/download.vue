@@ -1,17 +1,14 @@
 <script setup>
 import { ref } from 'vue';
-import { useCookie, useToast } from '#imports';
+import { useToast } from '#imports';
 
 const toast = useToast();
-const selectedPathsCookie = useCookie('selectedPaths');
+const selectedPaths = ref(import.meta.client ? JSON.parse(localStorage.getItem('selectedPaths') || '[]') : []);
 const isProcessingSelection = ref(false);
 const isProcessing = ref(false);
 const processedResults = ref(null);
 const downloadStarted = ref(false);
 const eventData = ref({})
-const selectedPaths = ref(
-    selectedPathsCookie.value ? selectedPathsCookie.value : []
-);
 
 const sleep = async (time) => {
   return new Promise( resolve => setTimeout(resolve, time) );
@@ -49,7 +46,9 @@ const processDownloads = async () => {
     const response = await $fetch('/api/process-downloads', {
       method: 'POST',
       body: {
-        acquiredData
+        acquiredData,
+        treeData: JSON.parse(localStorage.getItem('treeData') || {}),
+        selectedPaths: selectedPaths.value
       }
     });
 
@@ -73,7 +72,6 @@ const processDownloads = async () => {
     isProcessingSelection.value = false;
   }
 };
-
 
 const startDownloads = () => {
   if(import.meta.client) {
