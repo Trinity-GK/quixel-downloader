@@ -1,6 +1,6 @@
 import { defineEventHandler, getCookie, readBody } from 'h3'
 import { createWriteStream } from 'fs'
-import { mkdir, access, constants, stat } from 'fs/promises'
+import { mkdir, access, constants, stat, rename } from 'fs/promises'
 import { join } from 'path'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
@@ -409,16 +409,9 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                 }
             });
 
-            const filename = `${asset.id}.zip`;
-            const filePath = join(downloadDir, filename);
-
+            const tempFilePath = join(downloadDir, `${asset.id}.zip`);
+            let finalFilePath = tempFilePath; // We'll update this once we get the headers
             let downloadedBytes = 0;
-            try {
-                const stats = await stat(filePath);
-                downloadedBytes = stats.size;
-            } catch {
-                downloadedBytes = 0;
-            }
 
             let retryCount = 0;
             while (retryCount < 5) {
@@ -435,6 +428,35 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                         }
                     });
 
+                    // Extract original filename from Content-Disposition header
+                    const contentDisposition = headers['content-disposition'];
+                    let originalFilename = `${asset.id}.zip`; // Default fallback
+
+                    if (contentDisposition) {
+                        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                        if (filenameMatch && filenameMatch[1]) {
+                            originalFilename = filenameMatch[1].replace(/['"]/g, '');
+                            finalFilePath = join(downloadDir, originalFilename);
+                        }
+                    }
+
+                    // Check for existing files and handle renaming
+                    try {
+                        const tempStats = await stat(tempFilePath);
+                        if (tempStats.size > 0) {
+                            // If temp file exists, rename it to the original filename
+                            await rename(tempFilePath, finalFilePath);
+                            downloadedBytes = tempStats.size;
+                        }
+                    } catch {
+                        try {
+                            const finalStats = await stat(finalFilePath);
+                            downloadedBytes = finalStats.size;
+                        } catch {
+                            downloadedBytes = 0;
+                        }
+                    }
+
                     const totalSize = parseInt(
                         headers['content-range']
                             ? headers['content-range'].split('/')[1]
@@ -442,7 +464,7 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
                     );
 
                     if (downloadedBytes === totalSize) {
-                        console.log(`${filePath} already downloaded`);
+                        console.log(`${finalFilePath} already downloaded`);
                         break;
                     }
 
@@ -464,7 +486,7 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
 
                     await pipeline(
                         fileStream,
-                        createWriteStream(filePath, { flags: downloadedBytes > 0 ? 'a' : 'w' })
+                        createWriteStream(finalFilePath, { flags: downloadedBytes > 0 ? 'a' : 'w' })
                     );
                     break;
 
@@ -481,7 +503,7 @@ async function processDownloads(event: any, assets: any, api: any, settings: any
             sendProgressUpdate(event, {
                 type: 'asset_complete',
                 asset: asset.id,
-                path: filePath,
+                path: finalFilePath,
                 status: 'Download complete'
             });
 
